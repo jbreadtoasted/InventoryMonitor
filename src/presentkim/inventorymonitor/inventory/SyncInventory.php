@@ -10,7 +10,7 @@ use pocketmine\inventory\{
   BaseInventory, CustomInventory
 };
 use pocketmine\math\Vector3;
-use pocketmine\nbt\NetworkLittleEndianNBTStream;
+use pocketmine\nbt\BigEndianNBTStream;
 use pocketmine\nbt\tag\{
   CompoundTag, IntTag, StringTag
 };
@@ -24,7 +24,7 @@ use presentkim\inventorymonitor\util\Translation;
 
 class SyncInventory extends CustomInventory{
 
-    /** @var NetworkLittleEndianNBTStream|null */
+    /** @var BigEndianNBTStream|null */
     private static $nbtWriter = null;
 
     /** @var self[] */
@@ -80,7 +80,7 @@ class SyncInventory extends CustomInventory{
         ]);
 
         if (self::$nbtWriter === null) {
-            self::$nbtWriter = new NetworkLittleEndianNBTStream();
+            self::$nbtWriter = new BigEndianNBTStream();
         }
     }
 
