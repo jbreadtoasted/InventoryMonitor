@@ -1,8 +1,9 @@
 <?php
 
-namespace presentkim\inventorymonitor\inventory;
+declare(strict_types=1);
 
-use pocketmine\item\Item;
+namespace blugin\inventorymonitor\inventory;
+
 use pocketmine\Player;
 use pocketmine\Server;
 use pocketmine\block\{
@@ -11,53 +12,68 @@ use pocketmine\block\{
 use pocketmine\inventory\{
   BaseInventory, CustomInventory
 };
+use pocketmine\item\Item;
 use pocketmine\math\Vector3;
-use pocketmine\nbt\NetworkLittleEndianNBTStream;
+use pocketmine\nbt\{
+  NBT, NetworkLittleEndianNBTStream
+};
 use pocketmine\nbt\tag\{
-  CompoundTag, IntTag, StringTag
+  CompoundTag, ListTag, StringTag
 };
 use pocketmine\network\mcpe\protocol\{
   UpdateBlockPacket, BlockEntityDataPacket, ContainerOpenPacket, InventoryContentPacket
 };
 use pocketmine\network\mcpe\protocol\types\WindowTypes;
 use pocketmine\tile\Spawnable;
-use presentkim\inventorymonitor\task\SendDataPacketTask;
-use presentkim\inventorymonitor\util\Translation;
+use blugin\inventorymonitor\InventoryMonitor;
+use blugin\inventorymonitor\inventory\group\{
+    SlotGroup, InvGroup, ArmorGroup, CursorGroup
+};
+use blugin\inventorymonitor\task\SendDataPacketTask;
 
 class SyncInventory extends CustomInventory{
 
-    /** @var NetworkLittleEndianNBTStream|null */
-    private static $nbtWriter = null;
-
-    /** @var self[] */
-    public static $instances = [];
-
-    /** CompoundTag */
-    private $nbt;
-
-    /** Vector3[] */
-    private $vectors = [];
-
-    /** @var string */
-    private $playerName;
+    /** @var SyncInventory[] */
+    protected static $instances = [];
 
     /**
-     * SyncInventory constructor.
-     *
-     * @param string      $playerName
-     * @param CompoundTag $namedTag
+     * @return SyncInventory[]
      */
-    public function __construct(string $playerName, ?CompoundTag $namedTag = null){
+    public static function getAll(): array{
+        return self::$instances;
+    }
+
+    /**
+     * @param string $playerName
+     *
+     * @return null|SyncInventory
+     */
+    public static function get(string $playerName): ?SyncInventory{
+        return self::$instances[strtolower($playerName)] ?? null;
+    }
+
+    /**
+     * @param string $playerName
+     * @param bool $includeOffline = true
+     *
+     * @return null|SyncInventory
+     */
+    public static function load(string $playerName, bool $includeOffline = true) : ?SyncInventory{
+        $syncInventory = SyncInventory::get($playerName);
+        if ($syncInventory instanceof SyncInventory) {
+            return $syncInventory;
+        }
+
+        $playerName = strtolower($playerName);
+        /** @var Item[] $items */
         $items = [];
-        $player = Server::getInstance()->getPlayerExact($playerName);
-        if ($player instanceof Player) {
+        $server = Server::getInstance();
+        $player = $server->getPlayerExact($playerName);
+        if ($player instanceof Player){
             $inventory = $player->getInventory();
-            for ($i = 0; $i < 36; ++$i) {
-                $item = $inventory->getItem($i);
-                if (!$item->isNull()) {
-                    $items[$i] = $item;
-                }
-            }
+            /** @var Item[] $items */
+            $items = $inventory->getContents(true);
+
             $armorInventory = $player->getArmorInventory();
             for ($i = 0; $i < 4; ++$i) {
                 $item = $armorInventory->getItem($i);
@@ -65,42 +81,62 @@ class SyncInventory extends CustomInventory{
                     $items[$i + 46] = $item;
                 }
             }
-        } elseif ($namedTag !== null) {
-            $inventoryTag = $namedTag->getListTag("Inventory");
-            if ($inventoryTag !== null) {
-                /** @var CompoundTag $itemTag */
-                foreach ($inventoryTag as $i => $itemTag) {
-                    $slot = $itemTag->getByte("Slot");
-                    if ($slot > 8 && $slot < 44) { // 9-44 is PlayerInventory slot
-                        $items[$slot - 9] = Item::nbtDeserialize($itemTag);
-                    } elseif ($slot > 99 and $slot < 104) { // 100-103 is ArmorInventory slot
-                        // $items[$slot - 100 + 44] = Item::nbtDeserialize($itemTag);
-                        $items[$slot - 54] = Item::nbtDeserialize($itemTag);
+        } elseif($includeOffline) {
+            if (file_exists("{$server->getDataPath()}players/{$playerName}.dat")) {
+                $nbt = $server->getOfflinePlayerData($playerName);
+                $inventoryTag = $nbt->getListTag("Inventory");
+                if ($inventoryTag === null) {
+                    return null;
+                } else {
+                    /** @var CompoundTag $itemTag */
+                    foreach ($inventoryTag as $i => $itemTag) {
+                        $slot = $itemTag->getByte("Slot");
+                        if ($slot > 8 && $slot < 44) { // 9-44 is PlayerInventory slot
+                            $items[$slot - 9] = Item::nbtDeserialize($itemTag);
+                        } elseif ($slot > 99 and $slot < 104) { // 100-103 is ArmorInventory slot
+                            $items[$slot + ArmorGroup::START - 100] = Item::nbtDeserialize($itemTag);
+                        }
                     }
                 }
+            } else {
+                return null;
             }
+        } else {
+            return null;
         }
-        $borderItem = Item::get(Block::SKULL_BLOCK);
-        $borderItem->setCustomName('');
-        for ($i = 36; $i < 54; ++$i) {
-            if (!$this->isValidSlot($i)) {
-                $items[$i] = clone $borderItem;
-            }
-        }
+        return new SyncInventory($player->getName(), $items);
+    }
+
+    /** CompoundTag */
+    protected $nbt;
+
+    /** Vector3[] */
+    protected $vectors = [];
+
+    /** @var string */
+    protected $playerName;
+
+    /** @var SlotGroup[] */
+    protected $groups = [];
+
+    /**
+     * SyncInventory constructor.
+     *
+     * @param string      $playerName
+     * @param Item[]      $items
+     */
+    public function __construct(string $playerName, array $items){
         parent::__construct(new Vector3(0, 0, 0), $items, 54, null);
 
-        $this->playerName = $playerName;
+        $this->groups[] = new InvGroup($this);
+        $this->groups[] = new ArmorGroup($this);
+        $this->groups[] = new CursorGroup($this);
+
+        $this->playerName = strtolower($playerName);
         $this->nbt = new CompoundTag('', [
           new StringTag('id', 'Chest'),
-          new IntTag('x', 0),
-          new IntTag('y', 0),
-          new IntTag('z', 0),
-          new StringTag('CustomName', Translation::translate('chest-name', $player instanceof Player ? $player->getName() : $playerName)),
         ]);
-
-        if (self::$nbtWriter === null) {
-            self::$nbtWriter = new NetworkLittleEndianNBTStream();
-        }
+        self::$instances[$this->playerName] = $this;
     }
 
     /** @param Player $who */
@@ -128,12 +164,14 @@ class SyncInventory extends CustomInventory{
             $this->nbt->setInt('z', $vec->z);
             $this->nbt->setInt('pairx', $vec->x + (1 - $i));
             $this->nbt->setInt('pairz', $vec->z);
+            $player = Server::getInstance()->getPlayerExact($this->playerName);
+            $this->nbt->setString('CustomName', InventoryMonitor::getInstance()->getLanguage()->translate('chest.name', [$player instanceof Player ? $player->getName() : $this->playerName]));
 
             $pk = new BlockEntityDataPacket();
             $pk->x = $vec->x + $i;
             $pk->y = $vec->y;
             $pk->z = $vec->z;
-            $pk->namedtag = self::$nbtWriter->write($this->nbt);
+            $pk->namedtag = (new NetworkLittleEndianNBTStream())->write($this->nbt);
             $who->sendDataPacket($pk);
         }
 
@@ -175,6 +213,10 @@ class SyncInventory extends CustomInventory{
             }
         }
         unset($this->vectors[$key]);
+
+        if(empty($this->viewers)){
+            $this->delete();
+        }
     }
 
     /**
@@ -186,18 +228,8 @@ class SyncInventory extends CustomInventory{
      * @return bool
      */
     public function setItem(int $index, Item $item, bool $send = true, $sync = true) : bool{
-        if ($sync && $this->playerName !== null) {
-            $player = Server::getInstance()->getPlayerExact($this->playerName);
-            if ($player !== null) {
-                $inventory = $player->getInventory();
-                if ($this->isPlayerSlot($index)) {
-                    $inventory->setItem($index, $item, true);
-                } elseif ($this->isArmorSlot($index)) {
-                    $player->getArmorInventory()->setItem($index - 46, $item, true);
-                } elseif ($this->isCursorSlot($index)) {
-                    $player->getCursorInventory()->setItem(0, $item, true);
-                }
-            }
+        if ($sync) {
+            $this->getSlotGroup($index)->setItem($index, $item);
         }
         return parent::setItem($index, $item, $send);
     }
@@ -223,12 +255,17 @@ class SyncInventory extends CustomInventory{
     }
 
     /**
-     * @param int $index
-     *
-     * @return bool
+     * @return SlotGroup[]
      */
-    public function isValidSlot(int $index){
-        return $this->isPlayerSlot($index) || $this->isArmorSlot($index) || $this->isCursorSlot($index);
+    public function getGroups(): array{
+        return $this->groups;
+    }
+
+    /**
+     * @param SlotGroup[] $groups
+     */
+    public function setGroups(array $groups): void{
+        $this->groups = $groups;
     }
 
     /**
@@ -236,28 +273,65 @@ class SyncInventory extends CustomInventory{
      *
      * @return bool
      */
-    public function isPlayerSlot(int $index){
-        //  0-36 is PlayerInventory slot
-        return $index < 36;
+    public function isValidSlot(int $index) : bool{
+        return $this->getSlotGroup($index) instanceof SlotGroup;
     }
 
     /**
      * @param int $index
      *
-     * @return bool
+     * @return null|SlotGroup
      */
-    public function isArmorSlot(int $index){
-        // 46-49 is ArmorInventory  slot
-        return $index > 45 && $index < 50;
+    public function getSlotGroup(int $index) : ?SlotGroup{
+        foreach ($this->groups as $key => $group) {
+            if ($group->validate($index)) {
+                return $group;
+            }
+        }
+        return null;
     }
 
-    /**
-     * @param int $index
-     *
-     * @return bool
-     */
-    public function isCursorSlot(int $index){
-        // 52 is ArmorInventory  slot
-        return $index === 52;
+    public function delete() : void{
+        foreach ($this->viewers as $key => $who) {
+            $this->close($who);
+        }
+        $this->save();
+        unset(self::$instances[$this->playerName]);
+    }
+
+    public function save() : void{
+        $server = Server::getInstance();
+        $player = $server->getPlayerExact($this->playerName);
+        if ($player instanceof Player) {
+            $inventory = $player->getInventory();
+            for ($i = InvGroup::START; $i <= InvGroup::END; ++$i) {
+                $inventory->setItem($i, $this->getItem($i));
+            }
+
+            $armorInventory = $player->getArmorInventory();
+            for ($i = ArmorGroup::START; $i <= ArmorGroup::END; ++$i) {
+                $item = $this->getItem($i);
+                if (!$item->isNull()) {
+                    $armorInventory->setItem($i - 46, $this->getItem($i));
+                }
+            }
+        } else {
+            $namedTag = $server->getOfflinePlayerData($this->playerName);
+            $inventoryTag = new ListTag("Inventory", [], NBT::TAG_Compound);
+            for ($i = InvGroup::START; $i <= InvGroup::END; ++$i) {
+                $item = $this->getItem($i);
+                if (!$item->isNull()) {
+                    $inventoryTag->push($item->nbtSerialize($i + 9));
+                }
+            }
+            for ($i = ArmorGroup::START; $i <= ArmorGroup::END; ++$i) {
+                $item = $this->getItem($i);
+                if (!$item->isNull()) {
+                    $inventoryTag->push($item->nbtSerialize($i - ArmorGroup::START + 100));
+                }
+            }
+            $namedTag->setTag($inventoryTag);
+            $server->saveOfflinePlayerData($this->playerName,$namedTag);
+        }
     }
 }

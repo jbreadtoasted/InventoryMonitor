@@ -1,34 +1,34 @@
 <?php
 
-namespace presentkim\inventorymonitor\listener;
+declare(strict_types=1);
 
+namespace blugin\inventorymonitor\listener;
+
+use pocketmine\Server;
 use pocketmine\event\Listener;
-use pocketmine\event\player\PlayerJoinEvent;
-use presentkim\inventorymonitor\InventoryMonitor as Plugin;
-use presentkim\inventorymonitor\inventory\SyncInventory;
+use pocketmine\event\player\PlayerPreLoginEvent;
+use blugin\inventorymonitor\InventoryMonitor;
+use blugin\inventorymonitor\inventory\SyncInventory;
 
 class PlayerEventListener implements Listener{
 
-    /** @var Plugin */
+    /** @var InventoryMonitor */
     private $owner = null;
 
-    public function __construct(){
-        $this->owner = Plugin::getInstance();
+    public function __construct(InventoryMonitor $owner){
+        $this->owner = $owner;
     }
 
     /**
      * @priority LOWEST
      *
-     * @param PlayerJoinEvent $event
+     * @param PlayerPreLoginEvent $event
      */
-    public function onPlayerJoinEvent(PlayerJoinEvent $event){
-        $player = $event->getPlayer();
-        $syncInventory = SyncInventory::$instances[$player->getLowerCaseName()] ?? null;
+    public function onPlayerPreLoginEvent(PlayerPreLoginEvent $event){
+        $playerName = $event->getPlayer()->getLowerCaseName();
+        $syncInventory = SyncInventory::get($playerName);
         if ($syncInventory !== null) {
-            $inventory = $player->getInventory();
-            for ($i = 0, $size = $inventory->getSize(); $i < $size; ++$i) {
-                $inventory->setItem($i, $syncInventory->getItem($i));
-            }
+            $syncInventory->save();
         }
     }
 }

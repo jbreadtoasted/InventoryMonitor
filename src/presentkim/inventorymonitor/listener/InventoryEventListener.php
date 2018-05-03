@@ -1,6 +1,8 @@
 <?php
 
-namespace presentkim\inventorymonitor\listener;
+declare(strict_types=1);
+
+namespace blugin\inventorymonitor\listener;
 
 use pocketmine\Player;
 use pocketmine\event\Listener;
@@ -10,16 +12,19 @@ use pocketmine\event\entity\{
 use pocketmine\event\inventory\InventoryTransactionEvent;
 use pocketmine\inventory\transaction\action\SlotChangeAction;
 use pocketmine\inventory\PlayerCursorInventory;
-use presentkim\inventorymonitor\InventoryMonitor as Plugin;
-use presentkim\inventorymonitor\inventory\SyncInventory;
+use blugin\inventorymonitor\InventoryMonitor;
+use blugin\inventorymonitor\inventory\SyncInventory;
+use blugin\inventorymonitor\inventory\group\{
+    InvGroup, ArmorGroup, CursorGroup
+};
 
 class InventoryEventListener implements Listener{
 
-    /** @var Plugin */
+    /** @var InventoryMonitor */
     private $owner = null;
 
-    public function __construct(){
-        $this->owner = Plugin::getInstance();
+    public function __construct(InventoryMonitor $owner){
+        $this->owner = $owner;
     }
 
     /**
@@ -27,13 +32,14 @@ class InventoryEventListener implements Listener{
      *
      * @param EntityInventoryChangeEvent $event
      */
-    public function onEntityInventoryChangeEvent(EntityInventoryChangeEvent $event){
+    public function onEntityInventoryChangeEvent(EntityInventoryChangeEvent $event) : void{
         if (!$event->isCancelled()) {
             $player = $event->getEntity();
             if ($player instanceof Player) {
-                $syncInventory = SyncInventory::$instances[$player->getLowerCaseName()] ?? null;
+                $syncInventory = SyncInventory::get($player->getName());
                 if ($syncInventory !== null) {
-                    $syncInventory->setItem($event->getSlot() + ($event instanceof EntityArmorChangeEvent ? 46 : 0), $event->getNewItem(), true, false);
+                    $slot = $event->getSlot() + ($event instanceof EntityArmorChangeEvent ? ArmorGroup::START : InvGroup::START);
+                    $syncInventory->setItem($slot, $event->getNewItem(), true, false);
                 }
             }
         }
@@ -44,7 +50,7 @@ class InventoryEventListener implements Listener{
      *
      * @param InventoryTransactionEvent $event
      */
-    public function onInventoryTransactionEvent(InventoryTransactionEvent $event){
+    public function onInventoryTransactionEvent(InventoryTransactionEvent $event) : void{
         $transaction = $event->getTransaction();
         foreach ($transaction->getActions() as $key => $action) {
             if ($action instanceof SlotChangeAction) {
@@ -55,9 +61,9 @@ class InventoryEventListener implements Listener{
                     }
                 } elseif ($inventory instanceof PlayerCursorInventory) {
                     $player = $inventory->getHolder();
-                    $syncInventory = SyncInventory::$instances[$player->getLowerCaseName()] ?? null;
+                    $syncInventory = SyncInventory::get($player->getName());
                     if ($syncInventory !== null) {
-                        $syncInventory->setItem(52, $action->getTargetItem(), true, false);
+                        $syncInventory->setItem(CursorGroup::START, $action->getTargetItem(), true, false);
                     }
                 }
             }
